@@ -106,10 +106,10 @@ def get_order_actions_keyboard(order_id: int, api_order_id: str) -> InlineKeyboa
 def get_topup_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="💳 Payme orqali", callback_data="topup_payme"),
+        InlineKeyboardButton(text="💳 Payme orqali (Avto)", callback_data="topup_payme"),
     )
     builder.row(
-        InlineKeyboardButton(text="💳 Click orqali", callback_data="topup_click"),
+        InlineKeyboardButton(text="💳 Click orqali (Avto)", callback_data="topup_click"),
     )
     builder.row(
         InlineKeyboardButton(text="🏦 Admin orqali (Manual)", callback_data="topup_manual"),
