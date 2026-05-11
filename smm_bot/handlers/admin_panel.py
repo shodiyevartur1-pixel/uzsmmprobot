@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 # ── XAVFSIZLIK FILTRI ──────────────────────────────────────────────────────
-# Faqat adminlar uchun
 async def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids_list
 
@@ -33,7 +32,7 @@ def get_admin_main_kb():
     )
     builder.row(
         InlineKeyboardButton(text="🎟 Promo yaratish", callback_data="admin_promo_menu"),
-        InlineKeyboardButton(text="💳 To'lovlar", callback_data="admin_payments")
+        InlineKeyboardButton(text="⚙️ Sozlamalar", callback_data="admin_settings")
     )
     return builder.as_markup()
 
@@ -44,7 +43,7 @@ async def admin_panel(message: Message):
     if not await is_admin(message.from_user.id):
         return
     await message.answer(
-        "👑 <b>Admin Panel</b>\n\n"
+        "👑 <b>Admin Panel (V2 - Kuchaytirilgan)</b>\n\n"
         "Botni boshqarish markazi. Tanlang 👇",
         parse_mode="HTML",
         reply_markup=get_admin_main_kb()
@@ -90,13 +89,15 @@ async def show_stats(callback: CallbackQuery):
 async def user_menu(callback: CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         return
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back"))
+    
     await callback.message.edit_text(
         "👥 <b>Foydalanuvchi boshqaruvi</b>\n\n"
-        "Foydalanuvchi ID raqamini kiriting:",
+        "Boshqarmoqchi bo'lgan foydalanuvchining ID raqamini kiriting:",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardBuilder(
-            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back")]
-        ).as_markup()
+        reply_markup=builder.as_markup()
     )
     await state.set_state(AdminStates.waiting_for_user_id)
     await callback.answer()
@@ -118,19 +119,24 @@ async def process_user_id(message: Message, state: FSMContext):
         await message.answer("❌ Bunday ID li foydalanuvchi bazada topilmadi!")
         return
 
+    # sqlite3.Row ni dict ga o'tkazamiz
+    if not isinstance(user, dict):
+        user = dict(user)
+
     await state.update_data(target_user_id=user_id)
     
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="➕ Balans qo'shish", callback_data="admin_add_balance"))
     builder.row(InlineKeyboardButton(text="➖ Balans ayirish", callback_data="admin_sub_balance"))
+    builder.row(InlineKeyboardButton(text="📩 Xabar yuborish", callback_data="admin_msg_user"))
     builder.row(InlineKeyboardButton(text="🚫 Ban qilish", callback_data="admin_ban_user"))
     builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back"))
 
     await message.answer(
         f"👤 <b>Foydalanuvchi topildi:</b>\n\n"
-        f"🆔 ID: <code>{user['user_id']}</code>\n"
-        f"👤 Ism: {user['full_name']}\n"
-        f"💰 Balans: <b>{user['balance']:,.0f} so'm</b>\n\n"
+        f"🆔 ID: <code>{user.get('user_id')}</code>\n"
+        f"👤 Ism: {user.get('full_name')}\n"
+        f"💰 Balans: <b>{user.get('balance', 0):,.0f} so'm</b>\n\n"
         f"Amalni tanlang 👇",
         parse_mode="HTML",
         reply_markup=builder.as_markup()
@@ -145,10 +151,14 @@ async def ask_balance_amount(callback: CallbackQuery, state: FSMContext):
     action = "qo'shish" if "add" in callback.data else "ayirish"
     await state.update_data(balance_action=callback.data)
     
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Bekor qilish", callback_data="admin_back"))
+    
     await callback.message.edit_text(
         f"💰 Qancha summa {action} kerak?\n\n"
         "Faqat raqam kiriting:",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
     )
     await state.set_state(AdminStates.waiting_for_balance_amount)
     await callback.answer()
@@ -197,8 +207,47 @@ async def process_balance_update(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
 
 
+# ── FOYDALANUVCHIGA XABAR YUBORISH ─────────────────────────────────────────
+@router.callback_query(F.data == "admin_msg_user")
+async def ask_user_message(callback: CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        return
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_back"))
+    
+    await callback.message.edit_text(
+        "📩 <b>Foydalanuvchiga shaxsiy xabar yuborish</b>\n\n"
+        "Xabar matnini kiriting:",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+    await state.set_state(AdminStates.waiting_for_user_message)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_for_user_message)
+async def send_message_to_user(message: Message, state: FSMContext, bot: Bot):
+    if not await is_admin(message.from_user.id):
+        return await state.clear()
+    
+    data = await state.get_data()
+    user_id = data.get('target_user_id')
+    
+    try:
+        await bot.send_message(
+            user_id, 
+            f"✉️ <b>Admindan xabar:</b>\n\n{message.text}",
+            parse_mode="HTML"
+        )
+        await message.answer("✅ Xabar muvaffaqiyatli yuborildi!", reply_markup=get_admin_main_kb())
+    except Exception as e:
+        await message.answer(f"❌ Xabar yuborilmadi. Foydalanuvchi botni bloklagan bo'lishi mumkin.\nXato: {e}", reply_markup=get_admin_main_kb())
+    
+    await state.clear()
+
+
 # ── TO'LOVLARNI TASDIQLASH ─────────────────────────────────────────────────
-# Avvalgi user_account.py dan keladigan so'rovlarni ushlab qolamiz
 @router.message(F.text.startswith("/addbalance_"))
 async def approve_payment(message: Message, bot: Bot):
     if not await is_admin(message.from_user.id):
@@ -252,14 +301,15 @@ async def start_broadcast(callback: CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         return
     
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_back"))
+    
     await callback.message.edit_text(
         "📢 <b>Barchaga xabar yuborish</b>\n\n"
         "Yubormoqchi bo'lgan xabaringizni (matn, rasm, video) yuboring:\n\n"
         "⚠️ Xabar katta bo'lsa ham, bot barchaga yuboradi.",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardBuilder(
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_back")]
-        ).as_markup()
+        reply_markup=builder.as_markup()
     )
     await state.set_state(AdminStates.waiting_for_broadcast)
     await callback.answer()
@@ -278,11 +328,13 @@ async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
     status_msg = await message.answer("⏳ <b>Xabar yuborilmoqda...</b>\n\nBiroz kuting.", parse_mode="HTML")
 
     for user in users:
-        user_id = user['user_id']
+        # sqlite3.Row yoki dict ekanligini tekshiramiz
+        user_id = user['user_id'] if isinstance(user, dict) else user[0]
+        
         if user_id == message.from_user.id: # O'ziga yubormaslik
             continue
+            
         try:
-            # Har qanday kontentni (matn, rasm, video) nusxa ko'chirish
             await message.copy_to(chat_id=user_id)
             success += 1
             await asyncio.sleep(0.05) # Telegram limit uchun
@@ -305,13 +357,14 @@ async def promo_menu(callback: CallbackQuery, state: FSMContext):
     if not await is_admin(callback.from_user.id):
         return
     
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back"))
+    
     await callback.message.edit_text(
         "🎟 <b>Promokod yaratish</b>\n\n"
         "Yangi promo kod nomini kiriting (masalan: SMM2024):",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardBuilder(
-            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back")]
-        ).as_markup()
+        reply_markup=builder.as_markup()
     )
     await state.set_state(AdminStates.waiting_for_promo_code)
     await callback.answer()
@@ -384,3 +437,46 @@ async def process_promo_uses(message: Message, state: FSMContext):
         reply_markup=get_admin_main_kb()
     )
     await state.clear()
+
+
+# ── SOZLAMALAR ──────────────────────────────────────────────────────────────
+@router.callback_query(F.data == "admin_settings")
+async def admin_settings(callback: CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        return
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="admin_back"))
+    
+    await callback.message.edit_text(
+        "⚙️ <b>Bot Sozlamalari</b>\n\n"
+        f"🎁 Kunlik bonus: <b>{settings.DAILY_BONUS_AMOUNT:,} so'm</b>\n"
+        f"👥 Referal bonusi: <b>{settings.REFERRAL_BONUS_AMOUNT:,} so'm</b>\n"
+        f"💳 Minimal to'ldirish: <b>{settings.MIN_DEPOSIT:,} so'm</b>\n\n"
+        f"<i>Sozlamalarni o'zgartirish uchun config.py faylini tahrirlang.</i>",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+
+# ── BAN QILISH (TAYYOR STRUKTURA) ──────────────────────────────────────────
+@router.callback_query(F.data == "admin_ban_user")
+async def ban_user(callback: CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        return
+    
+    data = await state.get_data()
+    user_id = data.get('target_user_id')
+    
+    # Bu yerga database da ban qilish funksiyasini yozasiz: await ban_user_db(user_id)
+    
+    await callback.message.edit_text(
+        f"🚫 <b>Foydalanuvchi ban qilindi!</b>\n\n"
+        f"ID: <code>{user_id}</code>\n\n"
+        f"<i>(Hozircha bu demo, bazaga ban funksiyasini qo'shishingiz kerak)</i>",
+        parse_mode="HTML",
+        reply_markup=get_admin_main_kb()
+    )
+    await state.clear()
+    await callback.answer()
