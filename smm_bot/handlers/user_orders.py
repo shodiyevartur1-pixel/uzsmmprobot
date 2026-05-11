@@ -32,10 +32,10 @@ def format_order(order) -> str:
         price_str = str(price)
 
     return (
-        f"{status_emoji} <b>#{order.get('id', '?')}</b> — {order.get('service_name', 'Noma\'lum')}\n"
-        f"💰 {price_str} | 📊 {order.get('quantity', 0)} ta\n"
-        f"📅 {order.get('created_at', 'Sana yo\'q')}"
-    )
+    f"{status_emoji} <b>#{order.get('id', '?')}</b> — {order.get('service_name', 'Noma’lum')}\n"
+    f"💰 {price_str} | 📊 {order.get('quantity', 0)} ta\n"
+    f"📅 {order.get('created_at', 'Sana yo’q')}"
+)
 
 @router.message(F.text == "📦 Buyurtmalarim")
 async def my_orders(message: Message):

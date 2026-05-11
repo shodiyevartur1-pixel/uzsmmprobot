@@ -17,7 +17,7 @@ def get_main_menu() -> ReplyKeyboardMarkup:
         KeyboardButton(text="💳 Hisob To'ldirish"),
     )
     builder.row(
-        KeyboardButton(text="🤝 Hamkorlik"),
+        # KeyboardButton(text="🤝 Hamkorlik"),
         KeyboardButton(text="🆘 Yordam"),
     )
     return builder.as_markup(resize_keyboard=True)

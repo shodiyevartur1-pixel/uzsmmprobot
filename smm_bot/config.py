@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     CLICK_SECRET_KEY: str = ""
 
     # Bot Settings
-    DAILY_BONUS_AMOUNT: int = 500
+    DAILY_BONUS_AMOUNT: int = 200
     REFERRAL_BONUS_AMOUNT: int = 1000
     MIN_DEPOSIT: int = 5000
     SUPPORT_CHAT_ID: int = 0

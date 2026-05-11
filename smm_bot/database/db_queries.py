@@ -1,16 +1,22 @@
 import aiosqlite
 import logging
 from typing import Optional, List
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 DB_PATH = "smm_bot.db"
 
 
+# ─────────────────────────────────────────────
+# USERS
+# ─────────────────────────────────────────────
+
 async def get_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+        db.row_factory = aiosqlite.Row  # ← shu qatorni olib tashlang
         cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        return await cursor.fetchone()
+        row = await cursor.fetchone()
+        return dict(row) if row else None  # ← dict ga o'tkazish
 
 
 async def create_or_update_user(user_id: int, username, full_name: str, referrer_id=None) -> bool:
@@ -67,11 +73,56 @@ async def ban_user(user_id: int, ban: bool = True):
         await db.commit()
 
 
+async def unban_user(user_id: int):
+    """Foydalanuvchini blokdan chiqarish"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,)
+        )
+        await db.commit()
+
+
 async def get_all_users():
+    """
+    Barcha foydalanuvchilarni qaytaradi.
+    created_at ustuni bo'lmasa ham ishlaydi.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM users WHERE is_banned = 0")
+ 
+        # Mavjud ustunlarni aniqlash
+        cursor = await db.execute("PRAGMA table_info(users)")
+        columns_info = await cursor.fetchall()
+        columns = [col[1] for col in columns_info]
+ 
+        # Faqat mavjud ustunlarni so'rash
+        select_cols = ["user_id", "username", "full_name", "balance", "is_banned"]
+        if "created_at" in columns:
+            select_cols.append("created_at")
+        if "last_active" in columns:
+            select_cols.append("last_active")
+ 
+        sql = f"SELECT {', '.join(select_cols)} FROM users WHERE is_banned = 0"
+        cursor = await db.execute(sql)
         return await cursor.fetchall()
+    
+async def migrate_db():
+    """
+    Eski bazaga yangi ustunlar qo'shish (migration).
+    main.py da bot ishga tushishidan oldin chaqiring.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        migrations = [
+            "ALTER TABLE users ADD COLUMN created_at TEXT DEFAULT (datetime('now'))",
+            "ALTER TABLE users ADD COLUMN last_active TEXT DEFAULT (datetime('now'))",
+            "ALTER TABLE users ADD COLUMN total_spent REAL DEFAULT 0",
+        ]
+        for sql in migrations:
+            try:
+                await db.execute(sql)
+            except Exception:
+                pass  # Ustun allaqachon mavjud
+        await db.commit()
 
 
 async def get_user_count() -> dict:
@@ -92,6 +143,10 @@ async def get_referral_count(user_id: int) -> int:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+
+# ─────────────────────────────────────────────
+# ORDERS
+# ─────────────────────────────────────────────
 
 async def create_order(user_id, service_id, service_name, link, quantity, charge, api_order_id=None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -135,12 +190,24 @@ async def update_order_status(order_id: int, status: str, api_order_id: str = No
         await db.commit()
 
 
-async def get_all_orders(status: str = None, limit: int = 20):
+async def get_all_orders(status: str = None, limit: int = 20, user_id: int = None):
+    """Buyurtmalarni olish — status, user_id va limit bo'yicha filter"""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        if status:
+        if user_id and status:
             cursor = await db.execute(
-                "SELECT * FROM orders WHERE status=? ORDER BY created_at DESC LIMIT ?", (status, limit)
+                "SELECT * FROM orders WHERE user_id=? AND status=? ORDER BY created_at DESC LIMIT ?",
+                (user_id, status, limit)
+            )
+        elif user_id:
+            cursor = await db.execute(
+                "SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit)
+            )
+        elif status:
+            cursor = await db.execute(
+                "SELECT * FROM orders WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                (status, limit)
             )
         else:
             cursor = await db.execute(
@@ -148,6 +215,10 @@ async def get_all_orders(status: str = None, limit: int = 20):
             )
         return await cursor.fetchall()
 
+
+# ─────────────────────────────────────────────
+# TRANSACTIONS
+# ─────────────────────────────────────────────
 
 async def log_transaction(user_id: int, amount: float, ttype: str, description: str = None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -158,6 +229,80 @@ async def log_transaction(user_id: int, amount: float, ttype: str, description: 
         await db.commit()
 
 
+async def get_recent_transactions(limit: int = 20, user_id: int = None):
+    """So'nggi tranzaksiyalarni olish"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if user_id:
+            cursor = await db.execute(
+                "SELECT * FROM transactions WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit)
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM transactions ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
+        return await cursor.fetchall()
+
+
+# ─────────────────────────────────────────────
+# STATISTIKA
+# ─────────────────────────────────────────────
+
+async def get_stats() -> dict:
+    """Admin panel uchun to'liq statistika"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        total_users = (await (await db.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
+        active_users = (await (await db.execute(
+            "SELECT COUNT(*) FROM users WHERE last_active >= datetime('now', '-7 days') AND is_banned=0"
+        )).fetchone())[0]
+        banned_users = (await (await db.execute(
+            "SELECT COUNT(*) FROM users WHERE is_banned=1"
+        )).fetchone())[0]
+        today_users = (await (await db.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= date('now')"
+        )).fetchone())[0]
+
+        total_orders = (await (await db.execute("SELECT COUNT(*) FROM orders")).fetchone())[0]
+        pending_orders = (await (await db.execute(
+            "SELECT COUNT(*) FROM orders WHERE status='pending'"
+        )).fetchone())[0]
+        completed_orders = (await (await db.execute(
+            "SELECT COUNT(*) FROM orders WHERE status='completed'"
+        )).fetchone())[0]
+        cancelled_orders = (await (await db.execute(
+            "SELECT COUNT(*) FROM orders WHERE status='cancelled'"
+        )).fetchone())[0]
+        today_orders = (await (await db.execute(
+            "SELECT COUNT(*) FROM orders WHERE created_at >= date('now')"
+        )).fetchone())[0]
+
+        total_revenue = (await (await db.execute(
+            "SELECT COALESCE(SUM(charge),0) FROM orders WHERE status != 'cancelled'"
+        )).fetchone())[0]
+        today_revenue = (await (await db.execute(
+            "SELECT COALESCE(SUM(charge),0) FROM orders WHERE created_at >= date('now') AND status != 'cancelled'"
+        )).fetchone())[0]
+        month_revenue = (await (await db.execute(
+            "SELECT COALESCE(SUM(charge),0) FROM orders WHERE created_at >= date('now','start of month') AND status != 'cancelled'"
+        )).fetchone())[0]
+
+        return {
+            "total_users": total_users,
+            "active_users": active_users,
+            "banned_users": banned_users,
+            "today_users": today_users,
+            "total_orders": total_orders,
+            "pending_orders": pending_orders,
+            "completed_orders": completed_orders,
+            "cancelled_orders": cancelled_orders,
+            "today_orders": today_orders,
+            "total_revenue": total_revenue,
+            "today_revenue": today_revenue,
+            "month_revenue": month_revenue,
+        }
+
+
 async def get_total_stats() -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
         total_balance = (await (await db.execute("SELECT COALESCE(SUM(balance),0) FROM users")).fetchone())[0]
@@ -165,6 +310,10 @@ async def get_total_stats() -> dict:
         total_orders = (await (await db.execute("SELECT COUNT(*) FROM orders")).fetchone())[0]
         return {"total_balance": total_balance, "total_spent": total_spent, "total_orders": total_orders}
 
+
+# ─────────────────────────────────────────────
+# PROMO KODLAR
+# ─────────────────────────────────────────────
 
 async def create_promo(code: str, amount: float, max_uses: int = 1) -> bool:
     try:
@@ -176,6 +325,10 @@ async def create_promo(code: str, amount: float, max_uses: int = 1) -> bool:
             return True
     except aiosqlite.IntegrityError:
         return False
+
+
+async def add_promo_code(code: str, amount: int, max_uses: int) -> bool:
+    return await create_promo(code, float(amount), max_uses)
 
 
 async def get_promo(code: str):
@@ -226,6 +379,10 @@ async def delete_promo(promo_id: int):
         await db.commit()
 
 
+# ─────────────────────────────────────────────
+# DAILY BONUS
+# ─────────────────────────────────────────────
+
 async def can_claim_daily_bonus(user_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -240,6 +397,10 @@ async def log_daily_bonus(user_id: int):
         await db.execute("INSERT INTO daily_bonus_log (user_id) VALUES (?)", (user_id,))
         await db.commit()
 
+
+# ─────────────────────────────────────────────
+# SUPPORT TICKETS
+# ─────────────────────────────────────────────
 
 async def create_support_ticket(user_id: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -295,6 +456,10 @@ async def get_all_open_tickets():
         return await cursor.fetchall()
 
 
+# ─────────────────────────────────────────────
+# BOT SETTINGS
+# ─────────────────────────────────────────────
+
 async def get_setting(key: str):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("SELECT value FROM bot_settings WHERE key = ?", (key,))
@@ -308,24 +473,32 @@ async def set_setting(key: str, value: str):
             "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key, value)
         )
         await db.commit()
+async def unban_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
+        await db.commit()
 
-        # Barcha foydalanuvchilarni olish (Broadcast uchun)
-async def get_all_users():
-    # Sizning bazangizga qarab moslang (masalan: PostgreSQL yoki SQLite)
-    # return await db.fetch_all("SELECT user_id FROM users")
-    pass
+async def get_recent_transactions(limit: int = 20, user_id: int = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if user_id:
+            cursor = await db.execute("SELECT * FROM transactions WHERE user_id=? ORDER BY created_at DESC LIMIT ?", (user_id, limit))
+        else:
+            cursor = await db.execute("SELECT * FROM transactions ORDER BY created_at DESC LIMIT ?", (limit,))
+        return await cursor.fetchall()
 
-# Statistikani olish
-async def get_stats():
-    # Masalan:
-    # total_users = await db.fetch_val("SELECT COUNT(*) FROM users")
-    # total_balance = await db.fetch_val("SELECT COALESCE(SUM(balance), 0) FROM users")
-    # total_spent = await db.fetch_val("SELECT COALESCE(SUM(total_spent), 0) FROM users")
-    # return {"total_users": total_users, "total_balance": total_balance, "total_spent": total_spent, "active_today": 0}
-    return {"total_users": 0, "total_balance": 0, "total_spent": 0, "active_today": 0, "total_orders": 0}
-
-# Promo kod qo'shish
-async def add_promo_code(code: str, amount: int, max_uses: int):
-    # Masalan:
-    # await db.execute("INSERT INTO promos (code, amount, max_uses, used_count, is_active) VALUES (:code, :amount, :max_uses, 0, True)", {"code": code, "amount": amount, "max_uses": max_uses})
-    pass
+async def get_stats() -> dict:
+    async with aiosqlite.connect(DB_PATH) as db:
+        total_users = (await (await db.execute("SELECT COUNT(*) FROM users")).fetchone())[0]
+        active_users = (await (await db.execute("SELECT COUNT(*) FROM users WHERE is_banned=0")).fetchone())[0]
+        banned_users = (await (await db.execute("SELECT COUNT(*) FROM users WHERE is_banned=1")).fetchone())[0]
+        today_users = (await (await db.execute("SELECT COUNT(*) FROM users WHERE created_at >= date('now')")).fetchone())[0]
+        total_orders = (await (await db.execute("SELECT COUNT(*) FROM orders")).fetchone())[0]
+        pending_orders = (await (await db.execute("SELECT COUNT(*) FROM orders WHERE status='pending'")).fetchone())[0]
+        completed_orders = (await (await db.execute("SELECT COUNT(*) FROM orders WHERE status='completed'")).fetchone())[0]
+        cancelled_orders = (await (await db.execute("SELECT COUNT(*) FROM orders WHERE status='cancelled'")).fetchone())[0]
+        today_orders = (await (await db.execute("SELECT COUNT(*) FROM orders WHERE created_at >= date('now')")).fetchone())[0]
+        total_revenue = (await (await db.execute("SELECT COALESCE(SUM(charge),0) FROM orders WHERE status != 'cancelled'")).fetchone())[0]
+        today_revenue = (await (await db.execute("SELECT COALESCE(SUM(charge),0) FROM orders WHERE created_at >= date('now') AND status != 'cancelled'")).fetchone())[0]
+        month_revenue = (await (await db.execute("SELECT COALESCE(SUM(charge),0) FROM orders WHERE created_at >= date('now','start of month') AND status != 'cancelled'")).fetchone())[0]
+        return {"total_users": total_users, "active_users": active_users, "banned_users": banned_users, "today_users": today_users, "total_orders": total_orders, "pending_orders": pending_orders, "completed_orders": completed_orders, "cancelled_orders": cancelled_orders, "today_orders": today_orders, "total_revenue": total_revenue, "today_revenue": today_revenue, "month_revenue": month_revenue}
