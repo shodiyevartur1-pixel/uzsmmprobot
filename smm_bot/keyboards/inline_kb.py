@@ -160,6 +160,57 @@ def get_countries_keyboard(
 # ══════════════════════════════════════════════════════════════════
 
 def get_topup_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="💳 Karta orqali (Uzcard)", callback_data="topup_card"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔹 Click [Tez]",  callback_data="topup_click"),
+        InlineKeyboardButton(text="🍇 Uzum [Tez]",   callback_data="topup_uzum"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_main"),
+    )
+    return builder.as_markup()
+
+
+def get_card_payment_keyboard(amount: int, invoice_id: str) -> InlineKeyboardMarkup:
+    """Karta raqami + chek yuborish tugmasi."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="📋 Karta raqamini nusxalash",
+            callback_data=f"copy_card_{invoice_id}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="✅ Chek yubordim",
+            callback_data=f"sent_check_{invoice_id}_{amount}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(text="❌ Bekor qilish", callback_data="topup_back")
+    )
+    return builder.as_markup()
+
+
+def get_admin_confirm_payment_kb(user_id: int, amount: int, invoice_id: str) -> InlineKeyboardMarkup:
+    """Admin uchun — tasdiqlash yoki rad etish."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text=f"✅ {amount:,} so'm tasdiqlash",
+            callback_data=f"adm_pay_confirm_{user_id}_{amount}_{invoice_id}",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="❌ Rad etish",
+            callback_data=f"adm_pay_reject_{user_id}_{invoice_id}",
+        )
+    )
+    return builder.as_markup()
     """
     Tugmalar:
       🔹 Click [Avto]   🍇 Uzum [Avto]

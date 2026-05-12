@@ -14,6 +14,23 @@ from handlers.user_support import router as support_router
 from handlers.user_orders import router as orders_router
 from handlers.admin_panel import router as admin_router
 from handlers.user_numbers import router as numbers_router
+from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
+
+async def main():
+    logger.info("🚀 Bot ishga tushmoqda...")
+    await init_db()
+
+    # Proxy bilan
+    session = AiohttpSession(
+        proxy="http://proxy.server:3128"  # pastdagi bepul proxy lardan birini yozing
+    )
+
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
 
 # BU YERDAGI dp.include_router(numbers_router) OCHIRIB TASHLANDI!
 
