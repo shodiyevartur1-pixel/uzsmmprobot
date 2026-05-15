@@ -14,25 +14,7 @@ from handlers.user_support import router as support_router
 from handlers.user_orders import router as orders_router
 from handlers.admin_panel import router as admin_router
 from handlers.user_numbers import router as numbers_router
-from aiogram import Bot, Dispatcher
-from aiogram.client.session.aiohttp import AiohttpSession
-
-async def main():
-    logger.info("🚀 Bot ishga tushmoqda...")
-    await init_db()
-
-    # Proxy bilan
-    session = AiohttpSession(
-        proxy="http://proxy.server:3128"  # pastdagi bepul proxy lardan birini yozing
-    )
-
-    bot = Bot(
-        token=settings.BOT_TOKEN,
-        session=session,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-
-# BU YERDAGI dp.include_router(numbers_router) OCHIRIB TASHLANDI!
+from utils.scheduler import run_scheduler  # ← YANGI
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,20 +33,23 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Barcha routerlarni shu yerga, dp yaratilganidan keyin yozamiz:
     dp.include_router(admin_router)
     dp.include_router(start_router)
     dp.include_router(services_router)
     dp.include_router(account_router)
     dp.include_router(support_router)
     dp.include_router(orders_router)
-    dp.include_router(numbers_router)  # <--- SHU YERGA QO'SHDIK!
+    dp.include_router(numbers_router)
 
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Bot muvaffaqiyatli ishga tushdi!")
 
+    # Scheduler va polling parallel ishlaydi
     try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        await asyncio.gather(
+            dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()),
+            run_scheduler(bot),
+        )
     finally:
         await bot.session.close()
 

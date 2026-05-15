@@ -424,8 +424,6 @@ async def process_broadcast(message: Message, state: FSMContext, bot: Bot):
         await message.answer("❌ Bekor qilindi", reply_markup=get_admin_menu())
         return
 
-    # ─── get_all_users xatosini tuzatish ───
-    # get_all_users faqat mavjud ustunlarni qaytaradi (created_at bo'lmasa ham ishlaydi)
     try:
         users = await get_all_users()
     except Exception as e:
@@ -667,73 +665,183 @@ async def back_promo(callback: CallbackQuery):
 # 📦 BUYURTMALAR
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _orders_admin_kb():
+def _orders_main_kb():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(
-        text="🔍 ID bo'yicha qidirish", callback_data="search_order_admin"
-    ))
     builder.row(
-        InlineKeyboardButton(text="⏳ Kutilmoqda", callback_data="orders_pending"),
-        InlineKeyboardButton(text="✅ Bajarilgan",  callback_data="orders_completed"),
+        InlineKeyboardButton(text="⏳ Kutilmoqda",  callback_data="orders_filter_pending"),
+        InlineKeyboardButton(text="🔄 Jarayonda",   callback_data="orders_filter_processing"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="✅ Bajarilgan",  callback_data="orders_filter_completed"),
+        InlineKeyboardButton(text="❌ Bekor",        callback_data="orders_filter_cancelled"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔍 ID qidirish", callback_data="search_order_admin"),
     )
     return builder.as_markup()
 
 
-def _format_orders(orders: list, title: str) -> str:
-    text = f"{title}\n\n"
-    for o in orders:
-        e = STATUS_EMOJI.get(o["status"], "❓")
-        text += (
-            f"{e} <b>#{o['id']}</b> | 👤 {o['user_id']}\n"
-            f"   {o['service_name'][:35]}\n"
-            f"   💰 {o['charge']:,.0f} so'm | {o['status']}\n\n"
+def _orders_filter_kb(status: str):
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="orders_back_main"))
+    return builder.as_markup()
+
+
+def _order_manage_kb(order_id: int, user_id: int, charge: float, status: str):
+    builder = InlineKeyboardBuilder()
+    if status not in ("completed", "cancelled"):
+        builder.row(
+            InlineKeyboardButton(
+                text="✅ Bajarildi",
+                callback_data=f"ordstatus_completed_{order_id}_{user_id}_{int(charge)}",
+            ),
+            InlineKeyboardButton(
+                text="❌ Bekor",
+                callback_data=f"ordstatus_cancelled_{order_id}_{user_id}_{int(charge)}",
+            ),
         )
-    return text
+    builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="orders_back_main"))
+    return builder.as_markup()
+
+
+def _format_order_detail(o) -> str:
+    if not isinstance(o, dict):
+        o = dict(o)
+    e       = STATUS_EMOJI.get(o["status"], "❓")
+    created = (o.get("created_at") or "")[:16] or "—"
+    return (
+        f"📦 <b>Buyurtma #{o['id']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User ID: <code>{o['user_id']}</code>\n"
+        f"🔧 Xizmat: {o.get('service_name') or '—'}\n"
+        f"🔗 Havola: <code>{o.get('link') or '—'}</code>\n"
+        f"📊 Miqdor: {o.get('quantity') or 0:,}\n"
+        f"💰 Summa: {o.get('charge') or 0:,.0f} so'm\n"
+        f"{e} Holat: {o['status']}\n"
+        f"📅 Sana: {created}\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
 
 
 @router.message(F.text == "📦 Buyurtmalar")
 async def admin_orders(message: Message):
     if not is_admin(message.from_user.id):
         return
-    orders = await get_all_orders(limit=15)
-    if not orders:
-        await message.answer("📦 Buyurtmalar yo'q.")
-        return
+
+    all_orders = await get_all_orders(limit=10000)
+    all_orders = [dict(o) if not isinstance(o, dict) else o for o in all_orders]
+    counts = {
+        "pending":    sum(1 for o in all_orders if o["status"] == "pending"),
+        "processing": sum(1 for o in all_orders if o["status"] == "processing"),
+        "completed":  sum(1 for o in all_orders if o["status"] == "completed"),
+        "cancelled":  sum(1 for o in all_orders if o["status"] == "cancelled"),
+    }
+
     await message.answer(
-        _format_orders(orders, "📦 <b>So'nggi buyurtmalar:</b>"),
+        f"📦 <b>Buyurtmalar</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ Kutilmoqda:  <b>{counts['pending']}</b> ta\n"
+        f"🔄 Jarayonda:   <b>{counts['processing']}</b> ta\n"
+        f"✅ Bajarilgan:  <b>{counts['completed']}</b> ta\n"
+        f"❌ Bekor:       <b>{counts['cancelled']}</b> ta\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Jami: <b>{len(all_orders)}</b> ta\n\n"
+        f"Kategoriyani tanlang 👇",
         parse_mode="HTML",
-        reply_markup=_orders_admin_kb(),
+        reply_markup=_orders_main_kb(),
     )
 
 
-@router.callback_query(F.data == "orders_pending")
-async def orders_pending(callback: CallbackQuery):
+@router.callback_query(F.data == "orders_back_main")
+async def orders_back_main(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
-    orders = await get_all_orders(status="pending", limit=20)
-    if not orders:
-        await callback.answer("⏳ Kutilayotgan buyurtmalar yo'q!", show_alert=True)
-        return
+    all_orders = await get_all_orders(limit=10000)
+    counts = {
+        "pending":    sum(1 for o in all_orders if o["status"] == "pending"),
+        "processing": sum(1 for o in all_orders if o["status"] == "processing"),
+        "completed":  sum(1 for o in all_orders if o["status"] == "completed"),
+        "cancelled":  sum(1 for o in all_orders if o["status"] == "cancelled"),
+    }
     await callback.message.edit_text(
-        _format_orders(orders, "⏳ <b>Kutilayotgan buyurtmalar:</b>"),
+        f"📦 <b>Buyurtmalar</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ Kutilmoqda:  <b>{counts['pending']}</b> ta\n"
+        f"🔄 Jarayonda:   <b>{counts['processing']}</b> ta\n"
+        f"✅ Bajarilgan:  <b>{counts['completed']}</b> ta\n"
+        f"❌ Bekor:       <b>{counts['cancelled']}</b> ta\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Jami: <b>{len(all_orders)}</b> ta\n\n"
+        f"Kategoriyani tanlang 👇",
         parse_mode="HTML",
-        reply_markup=_orders_admin_kb(),
+        reply_markup=_orders_main_kb(),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data == "orders_completed")
-async def orders_completed(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("orders_filter_"))
+async def orders_filter(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
-    orders = await get_all_orders(status="completed", limit=20)
+
+    status = callback.data.replace("orders_filter_", "")
+    orders = await get_all_orders(status=status, limit=20)
+
+    titles = {
+        "pending":    "⏳ Kutilayotgan buyurtmalar",
+        "processing": "🔄 Jarayondagi buyurtmalar",
+        "completed":  "✅ Bajarilgan buyurtmalar",
+        "cancelled":  "❌ Bekor qilingan buyurtmalar",
+    }
+
     if not orders:
-        await callback.answer("✅ Bajarilgan buyurtmalar yo'q!", show_alert=True)
+        await callback.answer("Bu kategoriyada buyurtma yo'q!", show_alert=True)
         return
+
+    builder = InlineKeyboardBuilder()
+    for o in orders:
+        if not isinstance(o, dict):
+            o = dict(o)
+        e     = STATUS_EMOJI.get(o["status"], "❓")
+        charge = o.get("charge") or 0
+        label  = f"{e} #{o['id']} · {(o.get('service_name') or '')[:22]} · {charge:,.0f} so'm"
+        builder.row(InlineKeyboardButton(
+            text=label,
+            callback_data=f"order_view_{o['id']}",
+        ))
+    builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="orders_back_main"))
+
     await callback.message.edit_text(
-        _format_orders(orders, "✅ <b>Bajarilgan buyurtmalar:</b>"),
+        f"{titles.get(status, '📦 Buyurtmalar')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Jami: <b>{len(orders)}</b> ta (oxirgi 20)\n\n"
+        f"Batafsil ko'rish uchun bosing 👇",
         parse_mode="HTML",
-        reply_markup=_orders_admin_kb(),
+        reply_markup=builder.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("order_view_"))
+async def order_view(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+
+    order_id = int(callback.data.split("_")[2])
+    order    = await get_order_by_id(order_id)
+    if not order:
+        await callback.answer("❌ Buyurtma topilmadi!", show_alert=True)
+        return
+    if not isinstance(order, dict):
+        order = dict(order)
+
+    charge = order.get("charge") or 0
+    status = order.get("status") or "pending"
+
+    await callback.message.edit_text(
+        _format_order_detail(order),
+        parse_mode="HTML",
+        reply_markup=_order_manage_kb(order_id, order["user_id"], charge, status),
     )
     await callback.answer()
 
@@ -767,49 +875,40 @@ async def process_order_search(message: Message, state: FSMContext):
     order = await get_order_by_id(oid)
     if not order:
         await message.answer("❌ Buyurtma topilmadi!")
+        await state.clear()
         return
+    if not isinstance(order, dict):
+        order = dict(order)
 
-    e       = STATUS_EMOJI.get(order["status"], "❓")
-    created = (order.get("created_at") or "")[:16] or "—"
+    charge = order.get("charge") or 0
+    status = order.get("status") or "pending"
 
     await message.answer(
-        f"📦 <b>Buyurtma #{order['id']}</b>\n\n"
-        f"👤 User ID: <code>{order['user_id']}</code>\n"
-        f"🔧 Xizmat: {order['service_name']}\n"
-        f"🔗 Havola: <code>{order['link']}</code>\n"
-        f"📊 Miqdor: {order['quantity']:,}\n"
-        f"💰 Summa: {order['charge']:,.0f} so'm\n"
-        f"{e} Holat: {order['status']}\n"
-        f"📅 Sana: {created}",
+        _format_order_detail(order),
         parse_mode="HTML",
-        reply_markup=_order_manage_kb(order["id"], order["user_id"], order["charge"]),
+        reply_markup=_order_manage_kb(order["id"], order["user_id"], charge, status),
     )
     await state.clear()
-
-
-def _order_manage_kb(order_id: int, user_id: int, charge: float):
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(
-            text="✅ Bajarildi",
-            callback_data=f"ordstatus_completed_{order_id}",
-        ),
-        InlineKeyboardButton(
-            text="❌ Bekor qilish",
-            callback_data=f"ordstatus_cancelled_{order_id}_{user_id}_{int(charge)}",
-        ),
-    )
-    return builder.as_markup()
 
 
 @router.callback_query(F.data.startswith("ordstatus_completed_"))
 async def mark_order_completed(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
-    oid = int(callback.data.split("_")[2])
+    parts    = callback.data.split("_")
+    oid      = int(parts[2])
     await update_order_status(oid, "completed")
     await callback.answer("✅ Buyurtma bajarildi deb belgilandi!", show_alert=True)
-    await callback.message.edit_reply_markup(reply_markup=None)
+
+    order = await get_order_by_id(oid)
+    if order:
+        if not isinstance(order, dict):
+            order = dict(order)
+        await callback.message.edit_text(
+            _format_order_detail(order),
+            parse_mode="HTML",
+            reply_markup=_order_manage_kb(oid, order["user_id"], order.get("charge") or 0, "completed"),
+        )
 
 
 @router.callback_query(F.data.startswith("ordstatus_cancelled_"))
@@ -836,7 +935,16 @@ async def cancel_order_admin(callback: CallbackQuery, bot: Bot):
         pass
 
     await callback.answer("✅ Bekor qilindi, balans qaytarildi!", show_alert=True)
-    await callback.message.edit_reply_markup(reply_markup=None)
+
+    order = await get_order_by_id(oid)
+    if order:
+        if not isinstance(order, dict):
+            order = dict(order)
+        await callback.message.edit_text(
+            _format_order_detail(order),
+            parse_mode="HTML",
+            reply_markup=_order_manage_kb(oid, user_id, charge, "cancelled"),
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
