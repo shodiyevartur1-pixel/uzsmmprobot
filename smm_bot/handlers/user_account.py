@@ -1,6 +1,6 @@
 import logging
 import time
-from aiogram import Router, F, Bot
+from aiogram import Router, F, Bot, BaseMiddleware
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -21,32 +21,46 @@ router = Router()
 # ══════════════════════════════════════════════════════════════════
 # 💳 KARTA MA'LUMOTLARI
 # ══════════════════════════════════════════════════════════════════
-CARD_NUMBER = "9860 6067 5238 6163"
-CARD_OWNER  = "Shodiyev Artur"
-CARD_BANK   = "HUMO"
+CARD_NUMBER  = "9860 6067 5238 6163"
+CARD_OWNER   = "Shodiyev Artur"
+CARD_NUMBER2 = "5614 6848 0854 2821"
+CARD_OWNER2  = "Shodiyev Artur"
+CARD_PHONE   = "+998886636003"
 
-CLICK_MERCHANT_ID = "SIZNING_CLICK_MERCHANT_ID"
-CLICK_SERVICE_ID  = "SIZNING_CLICK_SERVICE_ID"
-UZUM_MERCHANT_ID  = "SIZNING_UZUM_MERCHANT_ID"
+# Har bir to'lov turi uchun bank ma'lumotlari
+BANK_INFO = {
+    "humo": {
+        "bank":   "Anor Bank",
+        "type":   "Humo",
+        "number": CARD_NUMBER,
+        "owner":  CARD_OWNER,
+    },
+    "uzcard": {
+        "bank":   "Agro Bank",
+        "type":   "Uzcard",
+        "number": CARD_NUMBER2,
+        "owner":  CARD_OWNER2,
+    },
+}
+
+PAYMENT_METHOD_LABELS = {
+    "humo":   "💳 Humo kartasi",
+    "uzcard": "💳 Uzcard kartasi",
+}
 
 
-def make_click_url(amount: int, invoice_id: str) -> str:
+def _card_info_text(method: str, amount: int) -> str:
+    """Tanlangan usulga mos, chiziqlarsiz karta ma'lumoti matni."""
+    info = BANK_INFO.get(method, BANK_INFO["humo"])
     return (
-        f"https://my.click.uz/services/pay"
-        f"?service_id={CLICK_SERVICE_ID}"
-        f"&merchant_id={CLICK_MERCHANT_ID}"
-        f"&amount={amount}"
-        f"&transaction_param={invoice_id}"
-    )
-
-
-def make_uzum_url(amount: int, invoice_id: str) -> str:
-    amount_tiyin = amount * 100
-    return (
-        f"https://checkout.paycom.uz"
-        f"?merchant={UZUM_MERCHANT_ID}"
-        f"&amount={amount_tiyin}"
-        f"&account[order_id]={invoice_id}"
+        f"💳 <b>{info['type']} to'lov</b>\n\n"
+        f"🏦 {info['bank']}\n"
+        f"💳 {info['type']}: <code>{info['number']}</code>\n"
+        f"📞 Raqam: <code>{CARD_PHONE}</code>\n"
+        f"👤 {info['owner']}\n\n"
+        f"💵 To'lov summasi: <b>{amount:,} so'm</b>\n\n"
+        f"⚠️ Yuqoridagi kartaga pul o'tkazing va\n"
+        f"📸 <b>to'lov chekining rasmini shu yerga yuboring!</b>"
     )
 
 
@@ -72,13 +86,13 @@ async def delete_messages(bot: Bot, chat_id: int, message_ids: list):
 # ══════════════════════════════════════════════════════════════════
 
 def _topup_main_kb():
+    """1) Humo   2) Uzcard — alohida tugmalarda."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="💳 Humo kartasi", callback_data="topup_humo"),
+        InlineKeyboardButton(text="💳 Humo orqali", callback_data="topup_humo"),
     )
     builder.row(
-        InlineKeyboardButton(text="🔹 Click [Avto]", callback_data="topup_click"),
-        InlineKeyboardButton(text="🍇 Uzum [Avto]",  callback_data="topup_uzum"),
+        InlineKeyboardButton(text="💳 Uzcard orqali", callback_data="topup_uzcard"),
     )
     builder.row(
         InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_main"),
@@ -86,19 +100,8 @@ def _topup_main_kb():
     return builder.as_markup()
 
 
-def _humo_card_kb():
+def _card_proof_kb():
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="❌ Bekor qilish", callback_data="topup_back"),
-    )
-    return builder.as_markup()
-
-
-def _auto_pay_kb(pay_url: str):
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="💳 To'lovga o'tish", url=pay_url)
-    )
     builder.row(
         InlineKeyboardButton(text="❌ Bekor qilish", callback_data="topup_back"),
     )
@@ -138,10 +141,6 @@ def _earn_kb(can_bonus: bool):
         text="🎟 Promo kod kiritish",
         callback_data="enter_promo",
     ))
-    builder.row(InlineKeyboardButton(
-        text="🔗 Referal havolani ko'rish",
-        callback_data="show_ref_link",
-    ))
     return builder.as_markup()
 
 
@@ -158,29 +157,20 @@ async def my_account(message: Message, bot: Bot):
     if not isinstance(user, dict):
         user = dict(user)
 
-    referrals = await get_referral_count(message.from_user.id)
-    orders    = await get_user_orders(message.from_user.id, limit=1000)
-    bot_info  = await bot.get_me()
-    ref_link  = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
+    orders = await get_user_orders(message.from_user.id, limit=1000)
 
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="💳 Hisob to'ldirish", callback_data="topup_quick"),
-        InlineKeyboardButton(text="💰 Pul ishlash",      callback_data="earn_quick"),
     )
 
     await message.answer(
         f"👤 <b>Mening hisobim</b>\n\n"
         f"🆔 ID: <code>{user['user_id']}</code>\n"
-        f"👤 Ism: <b>{user['full_name']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 Ism: <b>{user['full_name']}</b>\n\n"
         f"💰 Balans: <b>{user['balance']:,.0f} so'm</b>\n"
         f"💸 Jami sarflangan: <b>{user['total_spent']:,.0f} so'm</b>\n"
-        f"📦 Buyurtmalar: <b>{len(orders)} ta</b>\n"
-        f"👥 Referallar: <b>{referrals} ta</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 <b>Referal havola:</b>\n"
-        f"<code>{ref_link}</code>",
+        f"📦 Buyurtmalar soni: <b>{len(orders)} ta</b>",
         parse_mode="HTML",
         reply_markup=builder.as_markup(),
     )
@@ -202,13 +192,6 @@ async def topup_quick_cb(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "earn_quick")
-async def earn_quick_cb(callback: CallbackQuery, bot: Bot):
-    await safe_delete(bot, callback.message.chat.id, callback.message.message_id)
-    await _send_earn_menu(callback.message, callback.from_user.id, bot)
-    await callback.answer()
-
-
 # ══════════════════════════════════════════════════════════════════
 # 💳 HISOB TO'LDIRISH
 # ══════════════════════════════════════════════════════════════════
@@ -219,24 +202,18 @@ async def topup_menu(message: Message):
     if not isinstance(user, dict):
         user = dict(user)
 
-    # Avval reply menyu o'chiriladi, keyin to'lov ekrani chiqadi
+    # Reply-klaviaturani ko'rinmas belgi bilan yashirib, darhol o'chiramiz —
+    # qum soat yoki boshqa hech narsa ko'rinib qolmaydi
+    hide_msg = await message.answer("\u2063", reply_markup=ReplyKeyboardRemove())
+    await safe_delete(message.bot, message.chat.id, hide_msg.message_id)
+
     await message.answer(
-        "⏳",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    # O'sha "⏳" xabarini darhol o'chiramiz
-    sent_remove = await message.answer(
         f"💳 <b>Hisob To'ldirish</b>\n\n"
         f"💰 Joriy balans: <b>{user['balance']:,.0f} so'm</b>\n\n"
         f"To'lov usulini tanlang 👇",
         parse_mode="HTML",
         reply_markup=_topup_main_kb(),
     )
-    # ReplyKeyboardRemove xabarini o'chiramiz (faqat "⏳" xabari)
-    try:
-        await message.bot.delete_message(message.chat.id, sent_remove.message_id - 1)
-    except Exception:
-        pass
 
 
 @router.callback_query(F.data == "topup_back")
@@ -266,22 +243,16 @@ async def back_main_cb(callback: CallbackQuery, state: FSMContext):
 
 # ── USUL TANLANDI → SUMMA SO'RASH ────────────────────────────────
 
-@router.callback_query(F.data.in_({"topup_humo", "topup_click", "topup_uzum"}))
+@router.callback_query(F.data.in_({"topup_humo", "topup_uzcard"}))
 async def topup_method_selected(callback: CallbackQuery, state: FSMContext):
     method = callback.data.replace("topup_", "")
     await state.update_data(method=method)
     await state.set_state(TopUpStates.waiting_for_amount)
 
-    labels = {
-        "humo":  "💳 Humo kartasi",
-        "click": "🔹 Click",
-        "uzum":  "🍇 Uzum",
-    }
-    name = labels.get(method, "💳")
+    name = PAYMENT_METHOD_LABELS.get(method, "💳")
 
     await safe_delete(callback.bot, callback.message.chat.id, callback.message.message_id)
 
-    # Faqat "Orqaga" inline tugma — reply keyboard YO'Q
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="topup_back"))
 
@@ -304,6 +275,8 @@ async def topup_method_selected(callback: CallbackQuery, state: FSMContext):
 async def process_topup_amount(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     amount_ask_msg_id = data.get("amount_ask_msg_id")
+    method = data.get("method", "humo")
+    name = PAYMENT_METHOD_LABELS.get(method, "💳")
 
     # Foydalanuvchi yozgan xabarni o'chiramiz (faqat raqam yoki noto'g'ri matn)
     await safe_delete(bot, message.chat.id, message.message_id)
@@ -316,11 +289,7 @@ async def process_topup_amount(message: Message, state: FSMContext, bot: Bot):
             .replace(".", "")
         )
     except ValueError:
-        # Xato bo'lsa, summa so'rash xabarini yangilaymiz (o'chirib qayta yuborish)
         await safe_delete(bot, message.chat.id, amount_ask_msg_id)
-        data_method = data.get("method", "humo")
-        labels = {"humo": "💳 Humo kartasi", "click": "🔹 Click", "uzum": "🍇 Uzum"}
-        name = labels.get(data_method, "💳")
         builder = InlineKeyboardBuilder()
         builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="topup_back"))
         sent = await message.answer(
@@ -338,9 +307,6 @@ async def process_topup_amount(message: Message, state: FSMContext, bot: Bot):
 
     if amount < 2000:
         await safe_delete(bot, message.chat.id, amount_ask_msg_id)
-        data_method = data.get("method", "humo")
-        labels = {"humo": "💳 Humo kartasi", "click": "🔹 Click", "uzum": "🍇 Uzum"}
-        name = labels.get(data_method, "💳")
         builder = InlineKeyboardBuilder()
         builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="topup_back"))
         sent = await message.answer(
@@ -357,9 +323,6 @@ async def process_topup_amount(message: Message, state: FSMContext, bot: Bot):
 
     if amount > 10_000_000:
         await safe_delete(bot, message.chat.id, amount_ask_msg_id)
-        data_method = data.get("method", "humo")
-        labels = {"humo": "💳 Humo kartasi", "click": "🔹 Click", "uzum": "🍇 Uzum"}
-        name = labels.get(data_method, "💳")
         builder = InlineKeyboardBuilder()
         builder.row(InlineKeyboardButton(text="🔙 Orqaga", callback_data="topup_back"))
         sent = await message.answer(
@@ -374,56 +337,17 @@ async def process_topup_amount(message: Message, state: FSMContext, bot: Bot):
         await state.update_data(amount_ask_msg_id=sent.message_id)
         return
 
-    method     = data.get("method", "humo")
     invoice_id = f"INV{message.from_user.id}{int(time.time())}"
-
     await state.update_data(amount=amount, invoice_id=invoice_id)
     await safe_delete(bot, message.chat.id, amount_ask_msg_id)
 
-    # ── HUMO ─────────────────────────────────────────────────────
-    if method == "humo":
-        await state.set_state(TopUpStates.waiting_for_payment_proof)
-        sent = await message.answer(
-            f"💳 <b>HUMO TO'LOV</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🏦 Bank: <b>ANOR BANK</b>\n"
-            f"💳 Humo: <code>{CARD_NUMBER}</code>\n"
-            f"📞 Ulangan raqam: <code>+998886636003</code>\n"
-            f"👤 Karta egasi: <b>{CARD_OWNER}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💵 To'lov summasi: <b>{amount:,} so'm</b>\n\n"
-            f"⚠️ Yuqoridagi kartaga pul o'tkazing va\n"
-            f"📸 <b>to'lov chekining rasmini shu yerga yuboring!</b>",
-            parse_mode="HTML",
-            reply_markup=_humo_card_kb(),
-        )
-        await state.update_data(proof_ask_msg_id=sent.message_id)
-
-    # ── CLICK ─────────────────────────────────────────────────────
-    elif method == "click":
-        await state.clear()
-        await message.answer(
-            f"🔵 <b>Click [ Avto ] orqali hisob to'ldirish!</b>\n\n"
-            f"⚠️ To'lov to'langandan keyin bot balansiga avtomatik tashlab beriladi.\n\n"
-            f"👤 ID raqam: <code>{message.from_user.id}</code>\n"
-            f"💵 Summa: <b>{amount:,} so'm</b>\n\n"
-            f"👇 Quyidagi tugmani bosib to'lovni amalga oshiring.",
-            parse_mode="HTML",
-            reply_markup=_auto_pay_kb(make_click_url(amount, invoice_id)),
-        )
-
-    # ── UZUM ──────────────────────────────────────────────────────
-    elif method == "uzum":
-        await state.clear()
-        await message.answer(
-            f"🍇 <b>Uzum [ Avto ] orqali hisob to'ldirish!</b>\n\n"
-            f"⚠️ To'lov to'langandan keyin bot balansiga avtomatik tashlab beriladi.\n\n"
-            f"👤 ID raqam: <code>{message.from_user.id}</code>\n"
-            f"💵 Summa: <b>{amount:,} so'm</b>\n\n"
-            f"👇 Quyidagi tugmani bosib to'lovni amalga oshiring.",
-            parse_mode="HTML",
-            reply_markup=_auto_pay_kb(make_uzum_url(amount, invoice_id)),
-        )
+    await state.set_state(TopUpStates.waiting_for_payment_proof)
+    sent = await message.answer(
+        _card_info_text(method, amount),
+        parse_mode="HTML",
+        reply_markup=_card_proof_kb(),
+    )
+    await state.update_data(proof_ask_msg_id=sent.message_id)
 
 
 # ── CHEKNI QABUL QILISH ───────────────────────────────────────────
@@ -444,10 +368,12 @@ async def receive_payment_proof(message: Message, state: FSMContext, bot: Bot):
 
     amount     = data.get("amount", 0)
     invoice_id = data.get("invoice_id", "N/A")
+    method     = data.get("method", "humo")
+    method_label = BANK_INFO.get(method, BANK_INFO["humo"])["type"].upper()
     user       = message.from_user
 
     caption = (
-        f"💰 <b>Yangi to'lov so'rovi! (HUMO)</b>\n\n"
+        f"💰 <b>Yangi to'lov so'rovi! ({method_label})</b>\n\n"
         f"👤 {user.full_name}"
         f"{' (@' + user.username + ')' if user.username else ''}\n"
         f"🆔 ID: <code>{user.id}</code>\n"
@@ -601,25 +527,17 @@ async def _send_earn_menu(message: Message, user_id: int, bot: Bot):
     referrals = await get_referral_count(user_id)
     can_bonus = await can_claim_daily_bonus(user_id)
 
-    if can_bonus:
-        bonus_status = "✅ Bugun olish mumkin!"
-    else:
-        bonus_status = "⏳ Keyingi bonus 24 soatdan so'ng"
+    bonus_status = "✅ Bugun olishingiz mumkin!" if can_bonus else "⏳ Ertaga qayta urinib ko'ring"
 
     await message.answer(
-        f"💰 <b>Pul ishlash usullari</b>\n\n"
-        f"👥 <b>Referal tizimi</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Har bir taklif uchun: <b>{settings.REFERRAL_BONUS_AMOUNT:,} so'm</b>\n"
-        f"Sizning referallaringiz: <b>{referrals} ta</b>\n"
-        f"🔗 Havola:\n<code>{ref_link}</code>\n\n"
-        f"🎁 <b>Kunlik bonus</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Har 24 soatda: <b>{settings.DAILY_BONUS_AMOUNT:,} so'm</b>\n"
+        f"💰 <b>Pul ishlash</b>\n\n"
+        f"👥 Do'stlaringizni taklif qiling — har bir taklif uchun "
+        f"<b>{settings.REFERRAL_BONUS_AMOUNT:,} so'm</b> olasiz.\n"
+        f"Hozircha sizda <b>{referrals} ta</b> referal bor.\n\n"
+        f"🔗 Havolangiz (nusxalash uchun bosing):\n<code>{ref_link}</code>\n\n"
+        f"🎁 Kunlik bonus: <b>{settings.DAILY_BONUS_AMOUNT:,} so'm</b>\n"
         f"{bonus_status}\n\n"
-        f"🎟 <b>Promo kod</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Maxsus kod orqali bonus oling",
+        f"🎟 Promo kodingiz bo'lsa, pastdagi tugma orqali kiriting.",
         parse_mode="HTML",
         reply_markup=_earn_kb(can_bonus),
     )
@@ -661,16 +579,6 @@ async def claim_daily_bonus(callback: CallbackQuery, bot: Bot):
     )
     await callback.answer("✅ Bonus olindi!")
     await _send_earn_menu(callback.message, callback.from_user.id, bot)
-
-
-@router.callback_query(F.data == "show_ref_link")
-async def show_ref_link(callback: CallbackQuery, bot: Bot):
-    bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start=ref_{callback.from_user.id}"
-    await callback.answer(
-        f"🔗 Sizning referal havolangiz:\n{ref_link}",
-        show_alert=True,
-    )
 
 
 @router.callback_query(F.data == "enter_promo")
@@ -777,12 +685,8 @@ async def partnership(message: Message, bot: Bot):
 
     await message.answer(
         f"🤝 <b>Hamkorlik (API)</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 Base URL:\n"
-        f"<code>https://t.me/{bot_info.username}</code>\n\n"
-        f"🔑 API kalitingiz:\n"
-        f"<code>{api_key}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔗 Base URL:\n<code>https://t.me/{bot_info.username}</code>\n\n"
+        f"🔑 API kalitingiz:\n<code>{api_key}</code>\n\n"
         f"📖 <b>API metodlari:</b>\n"
         f"• <code>GET /balance</code> — Balans\n"
         f"• <code>POST /order</code> — Buyurtma\n"
@@ -798,3 +702,36 @@ async def partnership(message: Message, bot: Bot):
 async def copy_api_key_cb(callback: CallbackQuery):
     api_key = f"USR{callback.from_user.id}KEY"
     await callback.answer(f"🔑 API kalitingiz:\n{api_key}", show_alert=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🚪 TO'LOVNI AVTOMATIK BEKOR QILISH
+# ══════════════════════════════════════════════════════════════════
+#
+# Foydalanuvchi summa/chek kutilayotgan holatda turib, asosiy menyudagi
+# istalgan boshqa tugmani bossa — to'lov jarayoni avtomatik bekor bo'ladi
+# va bosgan menyusi odatdagidek ochiladi (qayta "Bekor qilish" bosish shart emas).
+
+def _main_menu_texts() -> set:
+    kb = get_main_menu()
+    texts = set()
+    for row in kb.keyboard:
+        for btn in row:
+            texts.add(btn.text)
+    return texts
+
+
+class CancelTopupOnMenuMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: Message, data: dict):
+        state: FSMContext = data.get("state")
+        if state is not None and event.text:
+            current = await state.get_state()
+            if current in {
+                TopUpStates.waiting_for_amount.state,
+                TopUpStates.waiting_for_payment_proof.state,
+            } and event.text in _main_menu_texts():
+                await state.clear()
+        return await handler(event, data)
+
+
+router.message.middleware(CancelTopupOnMenuMiddleware())

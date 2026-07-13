@@ -38,7 +38,6 @@ def get_admin_menu() -> ReplyKeyboardMarkup:
         KeyboardButton(text="📦 Buyurtmalar"),
     )
     builder.row(
-        KeyboardButton(text="🎫 Yordam Chatlari"),
         KeyboardButton(text="🏠 Asosiy Menu"),
     )
     return builder.as_markup(resize_keyboard=True)

@@ -13,7 +13,7 @@ from database.db_queries import (
     ban_user, update_user_balance, set_user_balance, log_transaction,
     create_promo, get_all_promos, delete_promo,
     get_all_orders, get_order_by_id, update_order_status,
-    get_all_open_tickets, get_setting, set_setting
+    get_setting, set_setting
 )
 from keyboards.reply_kb import get_main_menu, get_admin_menu, get_cancel_button
 from states.user_states import AdminStates
@@ -27,6 +27,15 @@ STATUS_EMOJI = {
     "completed":  "✅",
     "cancelled":  "❌",
     "partial":    "⚠️",
+}
+
+# Sozlamalar paneli kaliti → bazada saqlanadigan haqiqiy kalit.
+# Bu xaritalash bo'lmasa, "set_channels" saqlagan qiymat "force_channels"
+# o'qiladigan joydan ko'rinmay qoladi (aynan shu sabab kanal qo'shish ishlamagan).
+SETTING_KEY_MAP = {
+    "daily_bonus": "daily_bonus",
+    "ref_bonus":   "referral_bonus",
+    "channels":    "force_channels",
 }
 
 
@@ -948,32 +957,6 @@ async def cancel_order_admin(callback: CallbackQuery, bot: Bot):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 🎫 SUPPORT CHATLAR
-# ══════════════════════════════════════════════════════════════════════════════
-
-@router.message(F.text == "🎫 Yordam Chatlari")
-async def admin_support_tickets(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    tickets = await get_all_open_tickets()
-    if not tickets:
-        await message.answer("🎫 Ochiq support ticketlar yo'q.")
-        return
-
-    text = "🎫 <b>Ochiq Support Ticketlar:</b>\n\n"
-    builder = InlineKeyboardBuilder()
-    for t in tickets:
-        name = t.get("full_name") or str(t["user_id"])
-        text += f"#{t['id']} | 👤 {name} (<code>{t['user_id']}</code>)\n"
-        builder.row(InlineKeyboardButton(
-            text=f"#{t['id']} — {name[:20]}",
-            callback_data=f"reply_ticket_{t['id']}_{t['user_id']}",
-        ))
-
-    await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # ⚙️ SOZLAMALAR
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1039,11 +1022,13 @@ async def process_setting_value(message: Message, state: FSMContext):
         return
     data  = await state.get_data()
     key   = data["setting_key"]
+    # panel kaliti ("channels", "ref_bonus") bazadagi haqiqiy kalitga moslanadi
+    db_key = SETTING_KEY_MAP.get(key, key)
     value = message.text.strip()
-    await set_setting(key, value)
+    await set_setting(db_key, value)
     await message.answer(
         f"✅ <b>Sozlama yangilandi!</b>\n\n"
-        f"🔑 Kalit: <code>{key}</code>\n"
+        f"🔑 Kalit: <code>{db_key}</code>\n"
         f"📝 Yangi qiymat: <code>{value}</code>",
         parse_mode="HTML",
         reply_markup=get_admin_menu(),
