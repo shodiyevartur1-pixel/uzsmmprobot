@@ -992,19 +992,34 @@ async def admin_settings(message: Message):
     )
 
 
+SETTING_LABELS = {
+    "daily_bonus": "🎁 Kunlik bonus (so'mda)",
+    "ref_bonus":   "👥 Referal bonus (so'mda)",
+    "channels":    "📢 Kanallar",
+}
+
+SETTING_EXAMPLES = {
+    "daily_bonus": "Masalan: <code>1000</code>",
+    "ref_bonus":   "Masalan: <code>5000</code>",
+    "channels":    "Vergul bilan ajratib, @ belgisi bilan yozing.\nMasalan: <code>@kanal1,@kanal2</code>",
+}
+
+
 @router.callback_query(F.data.startswith("set_"))
 async def setting_change_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return
-    key = callback.data[4:]
-    labels = {
-        "daily_bonus": "🎁 Kunlik bonus (so'mda)",
-        "ref_bonus":   "👥 Referal bonus (so'mda)",
-        "channels":    "📢 Kanallar (@kanal1,@kanal2)",
-    }
+    key    = callback.data[4:]
+    db_key = SETTING_KEY_MAP.get(key, key)
+
+    current = await get_setting(db_key) or "— (hali o'rnatilmagan)"
+
     await state.update_data(setting_key=key)
     await callback.message.answer(
-        f"✏️ <b>{labels.get(key, key)}</b>\n\nYangi qiymatni kiriting:",
+        f"✏️ <b>{SETTING_LABELS.get(key, key)}</b>\n\n"
+        f"📌 Hozirgi qiymat: <code>{current}</code>\n\n"
+        f"{SETTING_EXAMPLES.get(key, '')}\n\n"
+        f"👇 Yangi qiymatni kiriting:",
         parse_mode="HTML",
         reply_markup=get_cancel_button(),
     )
@@ -1020,15 +1035,37 @@ async def process_setting_value(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Bekor qilindi", reply_markup=get_admin_menu())
         return
+
     data  = await state.get_data()
     key   = data["setting_key"]
     # panel kaliti ("channels", "ref_bonus") bazadagi haqiqiy kalitga moslanadi
     db_key = SETTING_KEY_MAP.get(key, key)
-    value = message.text.strip()
+    raw    = message.text.strip()
+
+    if key == "channels":
+        # "@kanal1, @kanal2" yoki "kanal1,kanal2" kabi kiritilsa ham to'g'rilaymiz:
+        # bo'sh joylarni olib tashlaymiz, "@" bo'lmasa qo'shamiz
+        parts = [p.strip().lstrip("@") for p in raw.split(",") if p.strip()]
+        if not parts:
+            await message.answer("❌ Kamida bitta kanal kiriting! Masalan: <code>@kanal1</code>", parse_mode="HTML")
+            return
+        value = ",".join(f"@{p}" for p in parts)
+    elif key in ("daily_bonus", "ref_bonus"):
+        try:
+            amount = float(raw.replace(" ", "").replace(",", ""))
+            if amount < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat raqam kiriting!")
+            return
+        value = str(int(amount)) if amount == int(amount) else str(amount)
+    else:
+        value = raw
+
     await set_setting(db_key, value)
     await message.answer(
         f"✅ <b>Sozlama yangilandi!</b>\n\n"
-        f"🔑 Kalit: <code>{db_key}</code>\n"
+        f"🔑 {SETTING_LABELS.get(key, db_key)}\n"
         f"📝 Yangi qiymat: <code>{value}</code>",
         parse_mode="HTML",
         reply_markup=get_admin_menu(),
